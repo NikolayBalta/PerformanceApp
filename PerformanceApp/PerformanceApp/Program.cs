@@ -1,20 +1,14 @@
-using System;
-using System.Data;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Data.SqlClient;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using Azure.Storage.Blobs.Models;
+using Azure.Storage.Blobs;
 using Npgsql;
-using PerformanceApp.Api;
-using PerformanceApp.Context;
 using PerformanceApp.Entities;
 using PerformanceApp.Models;
 using PerformanceApp.Utilites;
+using System.Data;
+using System.Reflection;
+using System.Text;
+using Microsoft.AspNetCore.Mvc;
+using System.IO;
 
 var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -22,10 +16,6 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddDbContext<PerformanceContext>(options =>
-{
-    options.UseNpgsql(connectionString);
-});
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -35,19 +25,13 @@ app.UseSwaggerUI(c=>
     c.DisplayRequestDuration();
 });
 app.UseHttpsRedirection();
+Jitter.PreJit(Assembly.GetAssembly(typeof(Program))!);
+BlobServiceClient blobServiceClient = new BlobServiceClient("DefaultEndpointsProtocol=https;AccountName=saperformanceapp;AccountKey=pLypAvaUH7nOmAFHleXv8LS/aYGW6vlLDmpyhBYPDiCANPOR9PIA8dBQQXYtofNxnUqZzu3w6c+Z+ASto0bTaQ==;EndpointSuffix=core.windows.net");
+BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient("documents");
 
-PerformanceContext context;
-var scope = builder.Services.BuildServiceProvider().CreateScope();
-context = scope.ServiceProvider.GetRequiredService<PerformanceContext>();
-
-
-    Jitter.PreJit(Assembly.GetAssembly(typeof(Program))!);
 [PreJit]
-IResult GetChallenge()
-{
-    var responseObject = new { message = "The challenge accepted!!!" };
-    return Results.Json(responseObject);
-}
+IResult GetChallenge() => Results.Json(new { message = "The challenge accepted!!!" });
+
 [PreJit]
 IResult SortArray(SortingModel model)
 {
@@ -131,21 +115,85 @@ static long CalculateFactorial(int n)
     }
     return n * CalculateFactorial(n - 1);
 }
+[PreJit]
+static IEnumerable<int> GenerateFibonacci(int n)
+{
+    if (n <= 0)
+        yield break;
 
-app.MapGet("/Start", GetChallenge)
-    .WithName("Start");
+    int a = 0, b = 1;
 
-app.MapPost("/Sort", SortArray)
-    .WithName("Sort");
+    for (int i = 0; i < n; i++)
+    {
+        yield return a;
+        int next = a + b;
+        a = b;
+        b = next;
+    }
+}
+[PreJit]
+static string ReverseWords(ReverseWordsModel sentence)
+{
+    var sb = new StringBuilder();
+    int start = 0;
 
-app.MapGet("/Data", GetData)
-    .WithName("GetData");
+    for (int i = 0; i < sentence.Sentence.Length; i++)
+    {
+        if (sentence.Sentence[i] != ' ' && i != sentence.Sentence.Length - 1) continue;
+        int end = i == sentence.Sentence.Length - 1 ? i : i - 1;
+        sb.Insert(0, sentence.Sentence.Substring(start, end - start + 1) + " ");
+        start = i + 1;
+    }
 
-app.MapGet("/Data/{productId}", GetProductById)
-    .WithName("GetDataById");
+    return sb.ToString().TrimEnd();
+}
+[PreJit]
+async Task<string> ReadTextFileFromBlobStorageAsync(string fileName)
+{
+    
+    BlobClient blobClient = containerClient.GetBlobClient(fileName);
 
-app.MapGet("/Factorial", CalculateFactorial).WithName("CalculateFactorial");
+    BlobDownloadInfo blobDownloadInfo = await blobClient.DownloadAsync();
 
+    using StreamReader reader = new StreamReader(blobDownloadInfo.Content);
+    string content = await reader.ReadToEndAsync();
+    return content;
+}
+[PreJit]
+async Task<FileContentResult> DownloadFile(string fileName)
+{
+    BlobClient blobClient = containerClient.GetBlobClient(fileName);
 
+    BlobDownloadInfo blobDownloadInfo = await blobClient.DownloadAsync();
+
+    var memoryStream = new MemoryStream();
+    await blobDownloadInfo.Content.CopyToAsync(memoryStream);
+    memoryStream.Seek(0, SeekOrigin.Begin);
+
+    return new FileContentResult(memoryStream.ToArray(), "application/octet-stream")
+    {
+        FileDownloadName = fileName
+    };
+}
+app.MapGet("/challenge", GetChallenge)
+    .WithName("challenge");
+
+app.MapGet("/products", GetData)
+    .WithName("products");
+
+app.MapGet("/products/{productId}", GetProductById)
+    .WithName("productsById");
+
+app.MapGet("/factorial", CalculateFactorial).WithName("factorial");
+
+app.MapGet("/fibonacci", GenerateFibonacci).WithName("fibonacci");
+
+app.MapPost("/sortArray", SortArray).WithName("sortArray");
+
+app.MapPost("/reverseWords", ReverseWords).WithName("reverseWords");
+
+app.MapPost("/textFromFile", ReadTextFileFromBlobStorageAsync).WithName("textFromFile");
+
+app.MapPost("/downloadFile", DownloadFile).WithName("download");
 
 app.Run();
